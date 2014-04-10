@@ -483,7 +483,6 @@ int main( int argc, char **argv) {
 
               printf("pcsensor\n");
            } else if (nagios) {
-               //strncpy(buffer, argv[1], sizeof(buffer));
               if (formato==2) {
                   tempc = 9.0 / 5.0 * tempc + 32.0;
                   strncpy(unit, "F", sizeof(unit));
