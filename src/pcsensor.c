@@ -1,4 +1,5 @@
 /*
+ * pcsensor.c by Toni Garcia Navarro (c) 2014 (topi@elpiset.net)
  * pcsensor.c by Philipp Adelt (c) 2012 (info@philipp.adelt.net)
  * based on Juan Carlos Perez (c) 2011 (cray@isp-sl.com)
  * based on Temper.c by Robert Kavaler (c) 2009 (relavak.com)
@@ -37,7 +38,7 @@
 #include <string.h>
 #include <errno.h>
 #include <signal.h> 
- 
+#include <limits.h>
  
 #define VERSION "1.0.0"
  
@@ -65,6 +66,15 @@ static int seconds=5;
 static int formato=0;
 static int mrtg=0;
 static int calibration=0;
+static int nagios=0;
+static int warning_min=INT_MIN;
+static int critical_min=INT_MIN;
+static int warning_max=INT_MAX;
+static int critical_max=INT_MAX;
+static char unit[]="C";
+static char status[10]="UNKNOWN";
+static int exit_code=3;
+static int perfdata=0;
 
 
 void bad(const char *why) {
@@ -320,7 +330,7 @@ int main( int argc, char **argv) {
      time_t t;
      int devicenum = 0;
 
-     while ((c = getopt (argc, argv, "mfcvhn:l::a:")) != -1)
+     while ((c = getopt (argc, argv, "mfcvhn:l::a:NW:C:p")) != -1)
      switch (c)
        {
        case 'v':
@@ -364,10 +374,38 @@ int main( int argc, char **argv) {
          } else {           
               break;
          }
+       case 'N':
+         nagios=1;
+         break;
+       case 'W':
+         if (!sscanf(optarg,"%i:%i",&warning_min,&warning_max)==1) {
+             if (!sscanf(optarg,":%i",&warning_max)==1) {
+                 fprintf (stderr, "Error: '%s' is not a valid warning range.\n", optarg);
+                 exit(EXIT_FAILURE);
+             } else {
+                 break;
+             }
+         } else {
+             break;
+         }
+       case 'C':
+         if (!sscanf(optarg,"%i:%i",&critical_min,&critical_max)==1) {
+             if (!sscanf(optarg,":%i",&critical_max)==1) {
+                 fprintf (stderr, "Error: '%s' is not a valid critical range.\n", optarg);
+                 exit(EXIT_FAILURE);
+             } else {
+                 break;
+             }
+         } else {
+             break;
+         }
+       case 'p':
+         perfdata=1;
+         break;
        case '?':
        case 'h':
          printf("pcsensor version %s\n",VERSION);
-	 printf("      Aviable options:\n");
+	 printf("      Available options:\n");
 	 printf("          -h help\n");
 	 printf("          -v verbose\n");
 	 printf("          -n[i] use device number i (0 is the first one found on the bus)\n");
@@ -376,7 +414,11 @@ int main( int argc, char **argv) {
 	 printf("          -f output only in Fahrenheit\n");
 	 printf("          -a[n] increase or decrease temperature in 'n' degrees for device calibration\n");
 	 printf("          -m output for mrtg integration\n");
-  
+         printf("          -N output as Nagios plugin\n");
+         printf("          -W specify warning range for Nagios plugin output\n");
+         printf("          -C specify critical range for Nagios plugin output\n");
+         printf("          -p output performance data for Nagios plugin output\n");
+
 	 exit(EXIT_FAILURE);
        default:
          if (isprint (optopt))
@@ -393,6 +435,11 @@ int main( int argc, char **argv) {
         exit(EXIT_FAILURE);
      }
  
+     if (warning_min < critical_min || warning_max > critical_max) {
+         fprintf(stderr, "Bad warning or critical ranges (warning range must be included inside critical range).\n");
+         exit(EXIT_FAILURE);
+     }
+
      if ((lvr_winusb = setup_libusb_access(devicenum)) == NULL) {
          exit(EXIT_FAILURE);
      } 
@@ -421,6 +468,7 @@ int main( int argc, char **argv) {
            local = localtime(&t);
 
            if (mrtg) {
+              exit_code=0;
               if (formato==2) {
                   printf("%.2f\n", (9.0 / 5.0 * tempc + 32.0));
                   printf("%.2f\n", (9.0 / 5.0 * tempc + 32.0));
@@ -434,7 +482,35 @@ int main( int argc, char **argv) {
                           local->tm_min);
 
               printf("pcsensor\n");
+           } else if (nagios) {
+               //strncpy(buffer, argv[1], sizeof(buffer));
+              if (formato==2) {
+                  tempc = 9.0 / 5.0 * tempc + 32.0;
+                  strncpy(unit, "F", sizeof(unit));
+              } else if (formato==1) {
+                  strncpy(unit, "C", sizeof(unit));
+              } else {
+                  strncpy(unit, "C", sizeof(unit));
+              }
+              
+              if (tempc < critical_min || tempc > critical_max) {
+                  strncpy(status, "CRITICAL", sizeof(status));
+                  exit_code=2;
+              } else if (tempc < warning_min || tempc > warning_max) {
+                  strncpy(status, "WARNING", sizeof(status));
+                  exit_code=1;
+              } else {
+                  strncpy(status, "OK", sizeof(status));
+                  exit_code=0;
+              }
+              
+              if (perfdata) {
+                  printf("%s - Temperature %.2f%s | temp=%.2f%s;%i:%i;%i:%i\n", status, tempc, unit, tempc, unit, warning_min, warning_max, critical_min, critical_max);
+              } else {
+                  printf("%s - Temperature %.2f%s\n", status, tempc, unit);
+              }
            } else {
+              exit_code=0;
               printf("%04d/%02d/%02d %02d:%02d:%02d ", 
                           local->tm_year +1900, 
                           local->tm_mon + 1, 
@@ -461,5 +537,5 @@ int main( int argc, char **argv) {
      
      usb_close(lvr_winusb); 
       
-     return 0; 
+     return exit_code; 
 }
